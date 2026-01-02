@@ -1,0 +1,44 @@
+PATH
+  remote: .
+  specs:
+    sidekiq-mem-warden (0.1.0)
+      sidekiq (>= 6.0)
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    connection_pool (2.5.3)
+    diff-lcs (1.6.2)
+    rack (2.2.17)
+    rake (13.3.0)
+    redis (4.8.1)
+    rspec (3.13.1)
+      rspec-core (~> 3.13.0)
+      rspec-expectations (~> 3.13.0)
+      rspec-mocks (~> 3.13.0)
+    rspec-core (3.13.5)
+      rspec-support (~> 3.13.0)
+    rspec-expectations (3.13.5)
+      diff-lcs (>= 1.2.0, < 2.0)
+      rspec-support (~> 3.13.0)
+    rspec-mocks (3.13.5)
+      diff-lcs (>= 1.2.0, < 2.0)
+      rspec-support (~> 3.13.0)
+    rspec-support (3.13.6)
+    sidekiq (6.5.12)
+      connection_pool (>= 2.2.5, < 3)
+      rack (~> 2.0)
+      redis (>= 4.5.0, < 5)
+
+PLATFORMS
+  arm64-darwin-24
+  ruby
+
+DEPENDENCIES
+  bundler (>= 1.17)
+  rake (>= 10.0)
+  rspec (~> 3.0)
+  sidekiq-mem-warden!
+
+BUNDLED WITH
+   2.6.9
