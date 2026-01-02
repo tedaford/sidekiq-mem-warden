@@ -25,12 +25,21 @@ module Sidekiq
       def self.install!(sidekiq_config = nil)
         sidekiq_config ||= Sidekiq
         sidekiq_config.on(:startup) do
-          Warden::Monitor.new(config).start
+          start_monitor(Warden::Monitor.new(config))
         end
       end
 
       def self.config
         @config ||= Config.new
+      end
+
+      def self.start_monitor(monitor)
+        @start_mutex ||= Mutex.new
+        @start_mutex.synchronize do
+          return if @started
+          @started = true
+        end
+        monitor.start
       end
 
       class Monitor
@@ -39,9 +48,16 @@ module Sidekiq
           @logger = config.logger || Sidekiq.logger
           @triggered = false
           @lock = Mutex.new
+          @start_lock = Mutex.new
+          @started = false
         end
 
         def start
+          @start_lock.synchronize do
+            return if @started
+            @started = true
+          end
+
           @thread = Thread.new do
             Thread.current.name = "sidekiq-mem-warden" if Thread.current.respond_to?(:name=)
             loop do

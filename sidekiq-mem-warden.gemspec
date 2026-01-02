@@ -7,7 +7,7 @@ Gem::Specification.new do |spec|
   spec.name          = "sidekiq-mem-warden"
   spec.version       = Sidekiq::Mem::Warden::VERSION
   spec.authors       = ["tedaford"]
-  spec.email         = ["ted.ford@fortra.com"]
+  spec.email         = ["daturafarms@gmail.com"]
 
   spec.summary       = %q{Sidekiq watchdog that quiets and restarts on high RSS.}
   spec.description   = %q{A small in-process watchdog that quiets Sidekiq with TSTP, waits for busy jobs to drain, and exits for a clean restart when RSS exceeds a configured limit.}
