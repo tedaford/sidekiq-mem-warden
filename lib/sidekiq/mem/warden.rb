@@ -10,9 +10,9 @@ module Sidekiq
         attr_accessor :memory_limit_mb, :check_interval, :quiet_timeout, :shutdown_timeout, :logger
 
         def initialize
-          @memory_limit_mb = 4608
+          @memory_limit_mb = 1024
           @check_interval = 15
-          @quiet_timeout = 30
+          @quiet_timeout = 300
           @shutdown_timeout = 300
           @logger = nil
         end
