@@ -13,6 +13,7 @@ GEM
     connection_pool (2.5.3)
     diff-lcs (1.6.2)
     ffi (1.17.3-arm64-darwin)
+    ffi (1.17.3-x86_64-linux-gnu)
     get_process_mem (1.0.0)
       bigdecimal (>= 2.0)
       ffi (~> 1.0)
@@ -41,6 +42,7 @@ GEM
 
 PLATFORMS
   arm64-darwin-24
+  x86_64-linux
 
 DEPENDENCIES
   bundler (>= 1.17)
