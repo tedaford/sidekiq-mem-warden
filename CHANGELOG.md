@@ -8,4 +8,7 @@
 
 ## 0.1.2
 - Default memory limit set to 1 GB (1024 MB).
-- Default quiet timeout set to 5 minutes (300 seconds).
+- Default grace time set to 5 minutes (300 seconds).
+
+## 0.1.3
+- Replaced the internal watchdog with Sidekiq server middleware based on sidekiq-worker-killer.

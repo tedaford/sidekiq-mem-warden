@@ -1,6 +1,6 @@
 # Sidekiq::Mem::Warden
 
-Sidekiq::Mem::Warden is a tiny, in-process watchdog that quiets a Sidekiq process when RSS exceeds a limit, waits for busy jobs to drain, then exits so your process manager can restart it.
+Sidekiq::Mem::Warden is a tiny Sidekiq server middleware that watches RSS and shuts down bloated processes after a grace period, allowing your process manager to restart them.
 
 ## Installation
 
@@ -26,21 +26,23 @@ Configure it in your Sidekiq server process:
 require "sidekiq/mem/warden"
 
 Sidekiq.configure_server do |config|
-  Sidekiq::Mem::Warden.configure do |c|
-    c.memory_limit_mb = 1024
-    c.check_interval = 15
-    c.quiet_timeout = 30
-    c.shutdown_timeout = 300
+  config.server_middleware do |chain|
+    chain.add Sidekiq::Mem::Warden,
+      max_rss: 1024,
+      grace_time: 300,
+      shutdown_wait: 30,
+      kill_signal: "SIGKILL",
+      gc: true,
+      skip_shutdown_if: ->(worker, job, queue) { false },
+      on_shutdown: ->(worker, job, queue) { nil }
   end
-
-  Sidekiq::Mem::Warden.install!(config)
 end
 ```
 
 Operational notes:
 
 - The warden runs inside each Sidekiq process.
-- When memory exceeds the limit, it sends `TSTP` to quiet the process, sleeps for `quiet_timeout`, waits for `Sidekiq::Workers` to drain, then sends `TERM` to exit.
+- When RSS exceeds `max_rss`, it quiets the process, waits for jobs to finish up to `grace_time`, then stops and sends `kill_signal`.
 - Ensure your supervisor (systemd, Kubernetes, etc.) is set to restart the process.
 
 ## Development
@@ -52,6 +54,10 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 ## Contributing
 
 Bug reports and pull requests are welcome on GitHub at https://github.com/tedaford/sidekiq-mem-warden.
+
+## Credits
+
+This gem is heavily based on the archived MIT-licensed `sidekiq-worker-killer` project.
 
 ## License
 

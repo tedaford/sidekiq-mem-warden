@@ -1,131 +1,119 @@
+require "get_process_mem"
 require "sidekiq"
+require "sidekiq/api"
+begin
+  require "sidekiq/middleware/modules"
+rescue LoadError
+end
 require "sidekiq/mem/warden/version"
 
 module Sidekiq
   module Mem
-    module Warden
-      class Error < StandardError; end
+    class Warden
+      include Sidekiq::ServerMiddleware if defined?(Sidekiq::ServerMiddleware)
 
-      class Config
-        attr_accessor :memory_limit_mb, :check_interval, :quiet_timeout, :shutdown_timeout, :logger
+      MUTEX = Mutex.new
 
-        def initialize
-          @memory_limit_mb = 1024
-          @check_interval = 15
-          @quiet_timeout = 300
-          @shutdown_timeout = 300
-          @logger = nil
+      def initialize(options = {})
+        @max_rss = options.fetch(:max_rss, 1024)
+        @grace_time = options.fetch(:grace_time, 300)
+        @shutdown_wait = options.fetch(:shutdown_wait, 30)
+        @kill_signal = options.fetch(:kill_signal, "SIGKILL")
+        @gc = options.fetch(:gc, true)
+        @skip_shutdown = options.fetch(:skip_shutdown_if, proc { false })
+        @on_shutdown = options.fetch(:on_shutdown, nil)
+      end
+
+      def call(worker, job, queue)
+        yield
+
+        return unless @max_rss.to_i > 0
+        return unless current_rss > @max_rss
+
+        GC.start(full_mark: true, immediate_sweep: true) if @gc
+        return unless current_rss > @max_rss
+
+        if skip_shutdown?(worker, job, queue)
+          warn "current RSS #{current_rss} exceeds maximum RSS #{@max_rss}, " \
+               "however shutdown will be ignored"
+          return
+        end
+
+        warn "current RSS #{current_rss} of #{identity} exceeds maximum RSS #{@max_rss}"
+        run_shutdown_hook(worker, job, queue)
+        request_shutdown
+      end
+
+      private
+
+      def run_shutdown_hook(worker, job, queue)
+        @on_shutdown.respond_to?(:call) && @on_shutdown.call(worker, job, queue)
+      end
+
+      def skip_shutdown?(worker, job, queue)
+        @skip_shutdown.respond_to?(:call) && @skip_shutdown.call(worker, job, queue)
+      end
+
+      def request_shutdown
+        Thread.new do
+          shutdown if MUTEX.try_lock
         end
       end
 
-      def self.configure
-        yield(config)
+      def shutdown
+        warn "sending quiet to #{identity}"
+        sidekiq_process.quiet!
+
+        sleep(5)
+
+        warn "shutting down #{identity} in #{@grace_time} seconds"
+        wait_job_finish_in_grace_time
+
+        warn "stopping #{identity}"
+        sidekiq_process.stop!
+
+        warn "waiting #{@shutdown_wait} seconds before sending #{@kill_signal} to #{identity}"
+        sleep(@shutdown_wait)
+
+        warn "sending #{@kill_signal} to #{identity}"
+        ::Process.kill(@kill_signal, ::Process.pid)
       end
 
-      def self.install!(sidekiq_config = nil)
-        sidekiq_config ||= Sidekiq
-        sidekiq_config.on(:startup) do
-          start_monitor(Warden::Monitor.new(config))
+      def wait_job_finish_in_grace_time
+        start = Time.now
+        sleep(1) until grace_time_exceeded?(start) || jobs_finished?
+      end
+
+      def grace_time_exceeded?(start)
+        return false if @grace_time == Float::INFINITY
+
+        start + @grace_time < Time.now
+      end
+
+      def jobs_finished?
+        sidekiq_process.stopping? && sidekiq_process["busy"] == 0
+      end
+
+      def current_rss
+        ::GetProcessMem.new.mb
+      end
+
+      def sidekiq_process
+        Sidekiq::ProcessSet.new.find do |process|
+          process["identity"] == identity
+        end || raise("No sidekiq worker with identity #{identity} found")
+      end
+
+      def identity
+        if respond_to?(:config) && config
+          config[:identity] || config["identity"]
+        else
+          Sidekiq.default_configuration[:identity] || Sidekiq.default_configuration["identity"]
         end
       end
 
-      def self.config
-        @config ||= Config.new
-      end
-
-      def self.start_monitor(monitor)
-        @start_mutex ||= Mutex.new
-        @start_mutex.synchronize do
-          return if @started
-          @started = true
-        end
-        monitor.start
-      end
-
-      class Monitor
-        def initialize(config)
-          @config = config
-          @logger = config.logger || Sidekiq.logger
-          @triggered = false
-          @lock = Mutex.new
-          @start_lock = Mutex.new
-          @started = false
-        end
-
-        def start
-          @start_lock.synchronize do
-            return if @started
-            @started = true
-          end
-
-          @thread = Thread.new do
-            Thread.current.name = "sidekiq-mem-warden" if Thread.current.respond_to?(:name=)
-            loop do
-              sleep @config.check_interval
-              next unless over_limit?
-              trigger!
-              break
-            end
-          end
-        end
-
-        private
-
-        def trigger!
-          @lock.synchronize do
-            return if @triggered
-            @triggered = true
-          end
-
-          @logger.warn("[sidekiq-mem-warden] RSS over limit (#{rss_mb}MB >= #{@config.memory_limit_mb}MB), quieting")
-          begin
-            Process.kill("TSTP", Process.pid)
-          rescue StandardError => e
-            @logger.warn("[sidekiq-mem-warden] failed to send TSTP: #{e.class}: #{e.message}")
-          end
-
-          sleep @config.quiet_timeout
-          wait_for_idle(@config.shutdown_timeout)
-
-          @logger.warn("[sidekiq-mem-warden] shutting down for restart")
-          begin
-            Process.kill("TERM", Process.pid)
-          rescue StandardError => e
-            @logger.warn("[sidekiq-mem-warden] failed to send TERM: #{e.class}: #{e.message}")
-          end
-        end
-
-        def wait_for_idle(timeout_seconds)
-          deadline = Time.now + timeout_seconds
-          while Time.now < deadline
-            busy = Sidekiq::Workers.new.size
-            return if busy == 0
-            sleep 1
-          end
-          @logger.warn("[sidekiq-mem-warden] timeout waiting for busy to drain; proceeding")
-        end
-
-        def over_limit?
-          rss_mb >= @config.memory_limit_mb
-        end
-
-        def rss_mb
-          (rss_kb.to_f / 1024).round(2)
-        end
-
-        def rss_kb
-          status_path = "/proc/#{Process.pid}/status"
-          if File.exist?(status_path)
-            status = File.read(status_path)
-            match = status.match(/^VmRSS:\s+(\d+)\s+kB$/)
-            return match[1].to_i if match
-          end
-
-          output = `ps -o rss= -p #{Process.pid}`.to_s.strip
-          output.to_i
-        rescue StandardError
-          0
-        end
+      def warn(msg)
+        Sidekiq.logger.warn(msg)
       end
     end
   end

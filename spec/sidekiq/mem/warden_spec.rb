@@ -1,196 +1,192 @@
-require "logger"
+require "spec_helper"
 
 RSpec.describe Sidekiq::Mem::Warden do
-  it "has a version number" do
-    expect(Sidekiq::Mem::Warden::VERSION).not_to be nil
+  let(:sidekiq_process_set) { instance_double(Sidekiq::ProcessSet) }
+  let(:sidekiq_process) { instance_double(Sidekiq::Process) }
+
+  before do
+    allow(subject).to receive(:warn)
+    allow(subject).to receive(:sleep)
+    allow(sidekiq_process).to receive(:quiet!)
+    allow(sidekiq_process).to receive(:stop!)
+    allow(sidekiq_process).to receive(:stopping?)
   end
 
-  it "exposes configurable defaults" do
-    config = described_class.config
-    expect(config.memory_limit_mb).to be > 0
-    expect(config.check_interval).to be > 0
-    expect(config.quiet_timeout).to be >= 0
-    expect(config.shutdown_timeout).to be > 0
-  end
-
-  it "allows configuration overrides" do
-    described_class.configure do |c|
-      c.memory_limit_mb = 2048
-      c.check_interval = 10
+  describe "#sidekiq_process" do
+    let(:identity) { "foobar" }
+    let(:mock_processes) do
+      [{
+        "identity" => identity,
+        "tag" => "baz",
+        "started_at" => Time.now,
+        "concurrency" => 5,
+        "busy" => 2,
+        "queues" => %w[low medium high]
+      }]
     end
 
-    config = described_class.config
-    expect(config.memory_limit_mb).to eq(2048)
-    expect(config.check_interval).to eq(10)
-  end
+    it "finds the process by identity" do
+      if subject.respond_to?(:config=)
+        subject.config = mock_processes.first
+      else
+        allow(subject).to receive(:identity).and_return(identity)
+      end
 
-  it "installs on sidekiq startup" do
-    monitor = instance_double(Sidekiq::Mem::Warden::Monitor, start: true)
-    allow(described_class::Monitor).to receive(:new).and_return(monitor)
-    allow(described_class).to receive(:start_monitor)
+      allow(Sidekiq).to receive(:redis)
+      sidekiq_process_set = Sidekiq::ProcessSet.new
+      sidekiq_mock_processes = mock_processes.map { |mock_process| Sidekiq::Process.new(mock_process) }
+      allow(sidekiq_process_set).to receive(:each) { |&block| sidekiq_mock_processes.each(&block) }
+      allow(Sidekiq::ProcessSet).to receive(:new).and_return(sidekiq_process_set)
 
-    startup_block = nil
-    sidekiq_config = double("SidekiqConfig")
-    allow(sidekiq_config).to receive(:on) do |event, &block|
-      expect(event).to eq(:startup)
-      startup_block = block
+      expect(subject.send(:identity)).to eq(identity)
+      expect(subject.send(:sidekiq_process)).to be_a(Sidekiq::Process)
+      expect(subject.send(:sidekiq_process).identity).to eq(identity)
     end
-
-    described_class.install!(sidekiq_config)
-    expect(startup_block).not_to be_nil
-    startup_block.call
-
-    expect(described_class).to have_received(:start_monitor).with(monitor)
   end
 
-  it "prevents multiple monitor starts at the class level" do
-    described_class.instance_variable_set(:@started, false)
-    described_class.instance_variable_set(:@start_mutex, Mutex.new)
-
-    monitor = instance_double(Sidekiq::Mem::Warden::Monitor, start: true)
-    described_class.start_monitor(monitor)
-    described_class.start_monitor(monitor)
-
-    expect(monitor).to have_received(:start).once
-  end
-
-  describe Sidekiq::Mem::Warden::Monitor do
-    let(:config) do
-      c = Sidekiq::Mem::Warden::Config.new
-      c.memory_limit_mb = 100
-      c.check_interval = 1
-      c.quiet_timeout = 0
-      c.shutdown_timeout = 2
-      c.logger = logger
-      c
-    end
-    let(:logger) { instance_double(Logger, warn: nil) }
-
+  context "with stubbed sidekiq_process" do
     before do
-      allow(Sidekiq).to receive(:logger).and_return(logger)
-      stub_const("Sidekiq::Workers", Class.new)
+      allow(Sidekiq::ProcessSet).to receive(:new) { sidekiq_process_set }
+      allow(sidekiq_process_set).to receive(:find) { sidekiq_process }
+      identity = "some-identity"
+      if subject.respond_to?(:config=)
+        subject.config = { "identity" => identity }
+      else
+        allow(subject).to receive(:identity).and_return(identity)
+      end
     end
 
-    it "starts only once per monitor instance" do
-      monitor = described_class.new(config)
-      allow(Thread).to receive(:new).and_return(double("thread"))
+    describe "#call" do
+      let(:worker) { double("worker") }
+      let(:job) { double("job") }
+      let(:queue) { double("queue") }
 
-      monitor.start
-      monitor.start
+      it "yields to the chain" do
+        expect { |b| subject.call(worker, job, queue, &b) }.to yield_with_no_args
+      end
 
-      expect(Thread).to have_received(:new).once
+      context "when current rss is over max rss" do
+        subject { described_class.new(max_rss: 2) }
+
+        before do
+          allow(subject).to receive(:current_rss).and_return(3)
+        end
+
+        it "requests shutdown" do
+          expect(subject).to receive(:request_shutdown)
+          subject.call(worker, job, queue) {}
+        end
+
+        it "runs garbage collection" do
+          allow(subject).to receive(:request_shutdown)
+          expect(GC).to receive(:start).with(full_mark: true, immediate_sweep: true)
+          subject.call(worker, job, queue) {}
+        end
+
+        context "and skip_shutdown_if is given" do
+          subject { described_class.new(max_rss: 2, skip_shutdown_if: skip_shutdown_proc) }
+
+          context "when skip_shutdown_if returns true" do
+            let(:skip_shutdown_proc) { proc { |worker, job, queue| true } }
+            it "does not request shutdown" do
+              expect(subject).not_to receive(:request_shutdown)
+              subject.call(worker, job, queue) {}
+            end
+          end
+
+          context "when skip_shutdown_if returns false" do
+            let(:skip_shutdown_proc) { proc { |worker, job, queue| false } }
+            it "still requests shutdown" do
+              expect(subject).to receive(:request_shutdown)
+              subject.call(worker, job, queue) {}
+            end
+          end
+        end
+
+        context "and on_shutdown is given" do
+          subject { described_class.new(max_rss: 2, on_shutdown: on_shutdown_proc) }
+
+          let(:on_shutdown_proc) { proc { |worker, job, queue| nil } }
+
+          it "executes on_shutdown hook" do
+            expect(subject).to receive(:request_shutdown).once
+            expect(on_shutdown_proc).to receive(:call).once
+            subject.call(worker, job, queue) {}
+          end
+        end
+
+        context "when gc is false" do
+          subject { described_class.new(max_rss: 2, gc: false) }
+          it "does not call garbage collect" do
+            allow(subject).to receive(:request_shutdown)
+            expect(GC).not_to receive(:start)
+            subject.call(worker, job, queue) {}
+          end
+        end
+
+        context "but max rss is 0" do
+          subject { described_class.new(max_rss: 0) }
+          it "does not request shutdown" do
+            expect(subject).not_to receive(:request_shutdown)
+            subject.call(worker, job, queue) {}
+          end
+        end
+      end
     end
 
-    it "triggers quiet and shutdown when over the limit" do
-      monitor = described_class.new(config)
-      allow(monitor).to receive(:rss_mb).and_return(150)
-      allow(Sidekiq::Workers).to receive(:new).and_return(double(size: 0))
-      allow(monitor).to receive(:sleep)
-      allow(Process).to receive(:kill)
+    describe "#request_shutdown" do
+      context "with default grace time" do
+        before { allow(subject).to receive(:shutdown) { sleep 0.01 } }
+        it "calls shutdown" do
+          expect(subject).to receive(:shutdown)
+          subject.send(:request_shutdown).join
+        end
+        it "does not call shutdown twice when called concurrently" do
+          expect(subject).to receive(:shutdown).once
+          2.times.map { subject.send(:request_shutdown) }.each(&:join)
+        end
+      end
 
-      monitor.send(:trigger!)
+      context "with a 5 second grace time" do
+        subject { described_class.new(max_rss: 2, grace_time: 5.0, shutdown_wait: 0) }
+        it "waits the specified grace time before stopping" do
+          allow(subject).to receive(:jobs_finished?).and_return(false)
 
-      expect(Process).to have_received(:kill).with("TSTP", Process.pid)
-      expect(Process).to have_received(:kill).with("TERM", Process.pid)
-    end
+          shutdown_request_time = nil
+          shutdown_time = nil
 
-    it "sleeps for quiet_timeout before draining" do
-      config.quiet_timeout = 5
-      monitor = described_class.new(config)
-      allow(Sidekiq::Workers).to receive(:new).and_return(double(size: 0))
-      allow(monitor).to receive(:sleep)
-      allow(monitor).to receive(:wait_for_idle)
-      allow(Process).to receive(:kill)
+          original_request_shutdown = subject.method(:request_shutdown)
+          allow(subject).to receive(:request_shutdown) do
+            shutdown_request_time = Time.now
+            original_request_shutdown.call
+          end
 
-      monitor.send(:trigger!)
+          expect(sidekiq_process).to receive(:stop!) do
+            shutdown_time = Time.now
+          end
 
-      expect(monitor).to have_received(:sleep).with(5)
-      expect(monitor).to have_received(:wait_for_idle).with(2)
-    end
+          allow(Process).to receive(:kill)
+          allow(Process).to receive(:pid).and_return(99)
 
-    it "only triggers once per monitor instance" do
-      monitor = described_class.new(config)
-      allow(Sidekiq::Workers).to receive(:new).and_return(double(size: 0))
-      allow(monitor).to receive(:sleep)
-      allow(Process).to receive(:kill)
+          subject.send(:request_shutdown).join
 
-      monitor.send(:trigger!)
-      monitor.send(:trigger!)
+          elapsed_time = shutdown_time - shutdown_request_time
+          expect(elapsed_time).to be >= 5.0
+        end
+      end
 
-      expect(Process).to have_received(:kill).with("TSTP", Process.pid).once
-      expect(Process).to have_received(:kill).with("TERM", Process.pid).once
-    end
+      context "with infinite grace time" do
+        subject { described_class.new(max_rss: 2, grace_time: Float::INFINITY, shutdown_wait: 0) }
+        it "only stops after jobs finish" do
+          allow(subject).to receive(:jobs_finished?).and_return(true)
+          allow(Process).to receive(:pid).and_return(99)
+          expect(sidekiq_process).to receive(:quiet!)
+          expect(sidekiq_process).to receive(:stop!)
+          expect(Process).to receive(:kill).with("SIGKILL", 99)
 
-    it "logs when quiet signal fails" do
-      monitor = described_class.new(config)
-      allow(Sidekiq::Workers).to receive(:new).and_return(double(size: 0))
-      allow(monitor).to receive(:sleep)
-      allow(Process).to receive(:kill).and_raise(StandardError.new("boom"))
-
-      monitor.send(:trigger!)
-
-      expect(logger).to have_received(:warn).with(/failed to send TSTP/)
-      expect(logger).to have_received(:warn).with(/failed to send TERM/)
-    end
-
-    it "waits for workers to drain" do
-      monitor = described_class.new(config)
-      workers = double
-      allow(workers).to receive(:size).and_return(2, 1, 0)
-      allow(Sidekiq::Workers).to receive(:new).and_return(workers)
-      allow(monitor).to receive(:sleep)
-
-      monitor.send(:wait_for_idle, 5)
-
-      expect(logger).not_to have_received(:warn)
-    end
-
-    it "warns on drain timeout" do
-      monitor = described_class.new(config)
-      allow(Sidekiq::Workers).to receive(:new).and_return(double(size: 1))
-      allow(monitor).to receive(:sleep)
-
-      monitor.send(:wait_for_idle, 0)
-
-      expect(logger).to have_received(:warn).with(/timeout waiting for busy to drain/)
-    end
-
-    it "detects over_limit? based on rss_mb" do
-      monitor = described_class.new(config)
-      allow(monitor).to receive(:rss_mb).and_return(101)
-
-      expect(monitor.send(:over_limit?)).to eq(true)
-    end
-
-    it "reads rss from /proc when available" do
-      monitor = described_class.new(config)
-      allow(File).to receive(:exist?).and_return(true)
-      allow(File).to receive(:read).and_return("VmRSS:\t12345 kB\n")
-
-      expect(monitor.send(:rss_kb)).to eq(12345)
-    end
-
-    it "falls back to ps when /proc is unavailable" do
-      monitor = described_class.new(config)
-      allow(File).to receive(:exist?).and_return(false)
-      allow(monitor).to receive(:`).and_return("4321\n")
-
-      expect(monitor.send(:rss_kb)).to eq(4321)
-    end
-
-    it "returns zero on rss read failure" do
-      monitor = described_class.new(config)
-      allow(File).to receive(:exist?).and_return(false)
-      allow(monitor).to receive(:`).and_raise(StandardError)
-
-      expect(monitor.send(:rss_kb)).to eq(0)
-    end
-
-    it "converts rss to megabytes" do
-      monitor = described_class.new(config)
-      allow(monitor).to receive(:rss_kb).and_return(2048)
-
-      expect(monitor.send(:rss_mb)).to eq(2.0)
+          subject.send(:request_shutdown).join
+        end
+      end
     end
   end
 end

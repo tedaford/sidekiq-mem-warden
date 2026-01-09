@@ -1,7 +1,7 @@
 module Sidekiq
   module Mem
-    module Warden
-      VERSION = "0.1.2"
+    class Warden
+      VERSION = "0.1.3"
     end
   end
 end
