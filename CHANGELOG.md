@@ -12,3 +12,6 @@
 
 ## 0.1.3
 - Replaced the internal watchdog with Sidekiq server middleware based on sidekiq-worker-killer.
+
+## 0.1.4
+- Fix lockfile
