@@ -16,7 +16,7 @@ module Sidekiq
 
       def initialize(options = {})
         @max_rss = options.fetch(:max_rss, 1024)
-        @grace_time = options.fetch(:grace_time, 300)
+        @grace_time = options.fetch(:grace_time, 2500)
         @shutdown_wait = options.fetch(:shutdown_wait, 30)
         @kill_signal = options.fetch(:kill_signal, "SIGKILL")
         @gc = options.fetch(:gc, true)

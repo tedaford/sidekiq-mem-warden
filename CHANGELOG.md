@@ -15,3 +15,6 @@
 
 ## 0.1.4
 - Fix lockfile
+
+## 0.1.5
+- Increase default timeout to 2500 seconds
