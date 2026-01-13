@@ -15,7 +15,7 @@ module Sidekiq
       MUTEX = Mutex.new
 
       def initialize(options = {})
-        @max_rss = options.fetch(:max_rss, 1024)
+        @max_rss = options.fetch(:max_rss, 2048)
         @grace_time = options.fetch(:grace_time, 2500)
         @shutdown_wait = options.fetch(:shutdown_wait, 30)
         @kill_signal = options.fetch(:kill_signal, "SIGKILL")

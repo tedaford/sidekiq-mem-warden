@@ -18,3 +18,6 @@
 
 ## 0.1.5
 - Increase default timeout to 2500 seconds
+
+## 0.1.6
+- Increase default memory limit to 2 GB
