@@ -26,16 +26,31 @@ Configure it in your Sidekiq server process:
 require "sidekiq/mem/warden"
 
 Sidekiq.configure_server do |config|
-  config.server_middleware do |chain|
-    chain.add Sidekiq::Mem::Warden,
-      max_rss: 1024,
-      grace_time: 300,
-      shutdown_wait: 30,
-      kill_signal: "SIGKILL",
-      gc: true,
-      skip_shutdown_if: ->(worker, job, queue) { false },
-      on_shutdown: ->(worker, job, queue) { nil }
-  end
+  Sidekiq::Mem::Warden.install!(config)
+end
+```
+
+By default this uses:
+
+- `max_rss`: `8192` MB (8 GB)
+- `grace_time`: `300` seconds
+- `shutdown_wait`: `30` seconds
+- `kill_signal`: `SIGKILL`
+- `gc`: `true`
+
+You can override these defaults with environment variables:
+
+- `SIDEKIQ_MEM_WARDEN_LIMIT_MB`
+- `SIDEKIQ_MEM_WARDEN_GRACE_TIME`
+- `SIDEKIQ_MEM_WARDEN_SHUTDOWN_WAIT`
+- `SIDEKIQ_MEM_WARDEN_KILL_SIGNAL`
+- `SIDEKIQ_MEM_WARDEN_GC`
+
+Or pass explicit overrides:
+
+```ruby
+Sidekiq.configure_server do |config|
+  Sidekiq::Mem::Warden.install!(config, max_rss: 12_288, grace_time: 900)
 end
 ```
 

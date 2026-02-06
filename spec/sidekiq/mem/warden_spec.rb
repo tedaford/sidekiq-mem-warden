@@ -12,6 +12,62 @@ RSpec.describe Sidekiq::Mem::Warden do
     allow(sidekiq_process).to receive(:stopping?)
   end
 
+  describe ".options_from_env" do
+    it "uses 8GB defaults when env vars are missing" do
+      options = described_class.options_from_env({})
+
+      expect(options).to include(
+        max_rss: 8192,
+        grace_time: 300,
+        shutdown_wait: 30,
+        kill_signal: "SIGKILL",
+        gc: true
+      )
+    end
+
+    it "parses configured values from env vars" do
+      options = described_class.options_from_env(
+        "SIDEKIQ_MEM_WARDEN_LIMIT_MB" => "16384",
+        "SIDEKIQ_MEM_WARDEN_GRACE_TIME" => "600",
+        "SIDEKIQ_MEM_WARDEN_SHUTDOWN_WAIT" => "45",
+        "SIDEKIQ_MEM_WARDEN_KILL_SIGNAL" => "SIGTERM",
+        "SIDEKIQ_MEM_WARDEN_GC" => "false"
+      )
+
+      expect(options).to include(
+        max_rss: 16_384,
+        grace_time: 600,
+        shutdown_wait: 45,
+        kill_signal: "SIGTERM",
+        gc: false
+      )
+    end
+  end
+
+  describe ".install!" do
+    let(:config) { instance_double("SidekiqConfig") }
+    let(:chain) { instance_double("SidekiqMiddlewareChain") }
+    let(:logger) { instance_double(Logger) }
+
+    it "adds middleware and logs the installed config" do
+      expect(config).to receive(:server_middleware).and_yield(chain)
+      expect(chain).to receive(:add).with(described_class, max_rss: 8192, grace_time: 300, shutdown_wait: 30, kill_signal: "SIGKILL", gc: true)
+      expect(logger).to receive(:warn).with("[sidekiq-mem-warden] installed limit=8192MB grace=300s shutdown_wait=30s kill_signal=SIGKILL gc=true")
+
+      options = described_class.install!(config, env: {}, logger: logger)
+      expect(options[:max_rss]).to eq(8192)
+    end
+
+    it "allows explicit overrides" do
+      expect(config).to receive(:server_middleware).and_yield(chain)
+      expect(chain).to receive(:add).with(described_class, max_rss: 9000, grace_time: 300, shutdown_wait: 30, kill_signal: "SIGKILL", gc: true)
+      allow(logger).to receive(:warn)
+
+      options = described_class.install!(config, env: {}, logger: logger, max_rss: 9000)
+      expect(options[:max_rss]).to eq(9000)
+    end
+  end
+
   describe "#sidekiq_process" do
     let(:identity) { "foobar" }
     let(:mock_processes) do
@@ -144,6 +200,11 @@ RSpec.describe Sidekiq::Mem::Warden do
         it "does not call shutdown twice when called concurrently" do
           expect(subject).to receive(:shutdown).once
           2.times.map { subject.send(:request_shutdown) }.each(&:join)
+        end
+        it "allows later shutdown requests after previous one completes" do
+          expect(subject).to receive(:shutdown).twice
+          subject.send(:request_shutdown).join
+          subject.send(:request_shutdown).join
         end
       end
 

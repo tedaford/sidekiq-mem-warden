@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7
+- Added `Sidekiq::Mem::Warden.install!` and `options_from_env` to provide one canonical middleware install path.
+- Default memory limit increased to 8 GB (`8192 MB`).
+- Hardened shutdown locking so sequential shutdown requests continue to work.
+
 ## 0.1.0
 - Initial release with RSS-based watchdog, quiet, drain, and restart behavior.
 

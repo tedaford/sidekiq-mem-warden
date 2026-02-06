@@ -11,7 +11,7 @@ Gem::Specification.new do |spec|
 
   spec.summary       = %q{Sidekiq watchdog that quiets and restarts on high RSS.}
   spec.description   = %q{A small in-process watchdog that quiets Sidekiq with TSTP, waits for busy jobs to drain, and exits for a clean restart when RSS exceeds a configured limit.}
-  spec.homepage      = "https://github.com/tedford/sidekiq-mem-warden"
+  spec.homepage      = "https://github.com/tedaford/sidekiq-mem-warden"
   spec.license       = "GPL-2.0-only"
 
   # Prevent pushing this gem to RubyGems.org. To allow pushes either set the 'allowed_push_host'
